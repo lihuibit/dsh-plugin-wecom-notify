@@ -1,0 +1,109 @@
+// Tests import this package's modules outside a dsh profile, so its @deepseek-ai peers resolve
+// the way a profile would supply them. This package installs them itself (devDependencies), so
+// `npm install` is enough; DSH_HARNESS points at a DeepSeek Harness install or checkout instead,
+// for testing against another DSH version.
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { registerHooks } from 'node:module'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const plugin = resolve(import.meta.dirname, '..')
+
+/**
+ * Where the @deepseek-ai packages come from: the explicit harness, or this package's own
+ * node_modules. An empty string means "nothing configured", which Node resolves natively.
+ */
+const findHarness = () => {
+  if (process.env.DSH_HARNESS) return process.env.DSH_HARNESS
+  const own = join(plugin, 'node_modules', '@deepseek-ai', 'dsh-session')
+  return existsSync(own) ? plugin : ''
+}
+
+const harness = findHarness()
+if (harness !== '') process.env.DSH_HARNESS = harness
+
+// An npm install links the packages at the root; a pnpm checkout keeps each workspace package
+// in its own folder, where Node's self-reference rule resolves its exports. This map carries
+// both, and stays empty for a plain node_modules, where Node needs no help.
+const base = harness === '' ? '' : resolve(harness, 'packages/bundle/base/package.json')
+const anchor = pathToFileURL(existsSync(base) ? base : resolve(harness === '' ? plugin : harness, 'package.json')).href
+const workspacePackages = new Map()
+if (base !== '' && existsSync(base)) {
+  const dirs = [
+    ...['apps', 'vendor'].flatMap(group => existsSync(join(harness, group))
+      ? readdirSync(join(harness, group), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(harness, group, entry.name))
+      : []),
+    ...(existsSync(join(harness, 'packages'))
+      ? readdirSync(join(harness, 'packages'), { withFileTypes: true }).filter(entry => entry.isDirectory())
+        .flatMap(group => readdirSync(join(harness, 'packages', group.name), { withFileTypes: true })
+          .filter(entry => entry.isDirectory()).map(entry => join(harness, 'packages', group.name, entry.name)))
+      : []),
+  ]
+  for (const dir of dirs) {
+    const manifest = join(dir, 'package.json')
+    if (!existsSync(manifest)) continue
+    try {
+      const { name } = JSON.parse(readFileSync(manifest, 'utf8'))
+      if (typeof name === 'string') workspacePackages.set(name, pathToFileURL(manifest).href)
+    } catch {}
+  }
+}
+
+const packageNameOf = specifier => specifier.split('/').slice(0, 2).join('/')
+const pluginUrl = `${pathToFileURL(plugin).href}/`
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith('@deepseek-ai/') && context.parentURL?.startsWith(pluginUrl)) {
+      const parentURL = workspacePackages.get(packageNameOf(specifier)) ?? anchor
+      return nextResolve(specifier, { ...context, parentURL })
+    }
+    return nextResolve(specifier, context)
+  },
+})
+
+// With --test-force-exit, Node's test runner calls process.exit() right after the reporter unpipes
+// from process.stdout, before buffered serialized frames finish draining. Wait for stdout and
+// stderr write queues to flush in child test contexts while preserving exit code validation.
+const flushStream = (stream, done) => {
+  if (!stream || stream.destroyed || stream.writableEnded || stream.writableFinished || !stream.writable) {
+    done()
+    return
+  }
+  let settled = false
+  const finish = () => {
+    if (settled) return
+    settled = true
+    stream.off('close', finish)
+    done()
+  }
+  while (stream.writableCorked > 0) stream.uncork()
+  // Keep a persistent error listener while exiting so an async EPIPE on one stream cannot crash
+  // before the other stream finishes flushing.
+  stream.on('error', finish)
+  stream.once('close', finish)
+  try {
+    stream.write('', finish)
+  } catch {
+    finish()
+  }
+}
+
+const testContext = process.env.NODE_TEST_CONTEXT
+if (testContext === 'child-v8' || testContext === 'child') {
+  const originalExit = process.exit
+  let exiting = false
+  process.exit = function exit(code) {
+    if (exiting) return
+    if (arguments.length !== 0) process.exitCode = code
+    exiting = true
+    const streams = [process.stdout, process.stderr]
+    let pending = streams.length
+    const onFlushed = () => {
+      if (--pending !== 0) return
+      process.exit = originalExit
+      originalExit.call(process)
+    }
+    for (const stream of streams) flushStream(stream, onFlushed)
+  }
+}

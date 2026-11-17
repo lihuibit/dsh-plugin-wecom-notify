@@ -1,0 +1,9 @@
+node_modules/
+
+# Editor and OS leftovers
+.DS_Store
+*.log
+*.swp
+
+# Local scratch space
+.tmp/

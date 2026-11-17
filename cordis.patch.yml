@@ -1,0 +1,5 @@
+# Mounts the WeCom notifier. Its webhook and switches live in its own config; with no
+# webhook it stays loaded and sends nothing (see README).
+- insert:
+    - id: wecom-notify
+      name: dsh-plugin-wecom-notify

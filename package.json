@@ -1,0 +1,59 @@
+{
+  "name": "dsh-plugin-wecom-notify",
+  "version": "0.1.0",
+  "description": "WeCom group-bot notifications for DS Bot: tell me when a Bot replies or a card waits",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "ds-bot",
+    "wecom",
+    "notification"
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "plugin.js",
+  "exports": {
+    ".": "./plugin.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "plugin.js",
+    "src/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "TODO: fill in the repository URL"
+  },
+  "homepage": "TODO: fill in the homepage",
+  "bugs": {
+    "url": "TODO: fill in the issue tracker"
+  },
+  "scripts": {
+    "test": "node --import ./test/harness-resolve.mjs --test --test-timeout=120000 --test-force-exit \"test/*.test.js\"",
+    "lint": "node scripts/lint.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-home-paths": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "oxlint": "1.76.0",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-credentials": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "3.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
