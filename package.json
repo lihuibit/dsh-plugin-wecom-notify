@@ -26,11 +26,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "TODO: fill in the repository URL"
+    "url": "git+https://github.com/lihuibit/dsh-plugin-wecom-notify.git"
   },
-  "homepage": "TODO: fill in the homepage",
+  "homepage": "https://github.com/lihuibit/dsh-plugin-wecom-notify#readme",
   "bugs": {
-    "url": "TODO: fill in the issue tracker"
+    "url": "https://github.com/lihuibit/dsh-plugin-wecom-notify/issues"
   },
   "scripts": {
     "test": "node --import ./test/harness-resolve.mjs --test --test-timeout=120000 --test-force-exit \"test/*.test.js\"",
