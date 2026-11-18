@@ -77,6 +77,7 @@ Put the switches in the profile's `cordis.patch.yml`:
     textChars: 200              # how much of the Bot's reply is quoted
     promptChars: 100            # how much of your line is quoted
     keepPushed: 2000            # how many sent ids survive a restart
+    presenceWindowMs: 60000     # stay quiet this long after you last acted; 0 always sends
 ```
 
 **With no webhook stored, the plugin loads and sends nothing.** It never fails a Bot's turn:
@@ -96,10 +97,27 @@ those lines on stderr.
   `source.kind` is `user`. A line another Bot sent, or context the Host injected, is never
   quoted as you.
 - **A finished turn** — `session/event` with `turn/end`.
+- **Whether you are at the computer** — see below.
 - **A waiting card** — DSH's forwarded-event queue, entries of `approval/request` or
   `user-questions/request`. A Host listener cannot use those two events directly, because an
   open browser answers the waterfall first and the Host never sees it. The first reading is a
   baseline: a card already waiting when the plugin starts is not news.
+
+## When you are already looking at it
+
+A message you would see on screen anyway is noise. The plugin keeps the time of your last
+action in a Session and skips the notice while you are still at the computer:
+
+- **A line you typed**, an **answered approval** or an **answered question card** counts.
+- Anything within `presenceWindowMs` (60 seconds by default) after that is not sent, and the
+  log says which notice was skipped. After that the notice goes out as usual.
+- A further action starts the window again. `presenceWindowMs: 0` turns this off.
+
+The Host cannot see your browser's focus or which conversation is on screen, so switching
+conversations does not count as being present — only acting does. Someone who only switches
+between conversations, without typing or answering, therefore still receives the notice 60
+seconds after their last action. That is the deliberate direction: one extra message costs
+less than a missed approval.
 
 ## Messages are sent at most once
 
@@ -141,6 +159,7 @@ src/team.js          bot/state.json → which conversation a Session is
 src/events.js        a finished turn's two lines, from the model-visible surface
 src/pending.js       the cards waiting, from the forwarded-event queue
 src/dedupe.js        the ids already sent, kept across restarts
+src/presence.js      whether the user has acted recently enough to skip a notice
 src/compose.js       the WeCom markdown body
 src/webhook.js       one POST, one retry, silence on failure
 src/install.js       the wiring the entry applies

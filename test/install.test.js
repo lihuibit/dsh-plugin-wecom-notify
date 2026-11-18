@@ -15,7 +15,7 @@ const text = value => ({ type: 'text', text: value })
  * @param {object} options.state the team file to write
  * @param {string} [options.webhook] the stored webhook URL, if any
  */
-async function bench({ state, webhook, events, waiting }) {
+async function bench({ state, webhook, events, waiting, presenceWindowMs }) {
   const root = await mkdtemp(join(tmpdir(), 'wecom-notify-bench-'))
   await mkdir(join(root, 'bot'), { recursive: true })
   await writeFile(join(root, 'bot', 'state.json'), JSON.stringify(state), 'utf8')
@@ -26,6 +26,9 @@ async function bench({ state, webhook, events, waiting }) {
   const warnings = []
   const listeners = []
   let pending = waiting ?? []
+  // A clock the presence tests move by hand; the other tests never need to move it.
+  let time = 1_000_000
+  const now = () => time
   const ctx = {
     credentials: { resolve: async () => (webhook === undefined ? undefined : { value: webhook }) },
     typertGateway: { getPendingRemoteEvents: () => pending },
@@ -34,9 +37,14 @@ async function bench({ state, webhook, events, waiting }) {
   }
   const notifier = install({
     ctx,
-    config: resolveConfig({ pollMs: 60000, ...(events === undefined ? {} : { events }) }),
+    config: resolveConfig({
+      pollMs: 60000,
+      ...(events === undefined ? {} : { events }),
+      ...(presenceWindowMs === undefined ? {} : { presenceWindowMs }),
+    }),
     home: join(root, 'state', 'wecom-notify'),
     warn: message => warnings.push(message),
+    now,
     fetch: async (_url, options) => {
       sent.push(JSON.parse(options.body).markdown.content)
       return { ok: true, json: async () => ({ errcode: 0 }) }
@@ -50,6 +58,12 @@ async function bench({ state, webhook, events, waiting }) {
     warnings,
     notifier,
     setPending: (next) => { pending = next },
+    advance: (ms) => { time += ms },
+    emit: (session, event) => {
+      for (const { event: name, listener } of listeners) {
+        if (name === 'session/event') listener(session, event)
+      }
+    },
     turnEnded: (session, turn) => {
       for (const { event, listener } of listeners) {
         if (event === 'session/event') listener(session, { type: 'turn/end', data: { turn, reason: 'completed' } })
@@ -218,6 +232,150 @@ test('an approval in a group member hidden Session is still sent', async () => {
     await settle()
     assert.equal(run.sent.length, 1)
     assert.match(run.sent[0], /PM · Launch/)
+  } finally {
+    await run.close()
+  }
+})
+
+// --- Presence: a user at the computer already sees the answer ---
+
+/** One line the user types, as the Host records it. */
+const userTyped = textValue => ({
+  type: 'user/message',
+  data: { role: 'user', content: [text(textValue)], source: { kind: 'user' } },
+})
+
+test('a reply within the window is not sent, and says why', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    // The user types, then the Bot answers straight away.
+    run.emit({ id: 'session-a' }, userTyped('Are we green?'))
+    run.advance(5_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'Yes.', prompt: 'Are we green?' }), 1)
+    await settle()
+
+    assert.deepEqual(run.sent, [])
+    assert.ok(run.warnings.some(message => /was not sent, the user was active/.test(message)), run.warnings.join('\n'))
+  } finally {
+    await run.close()
+  }
+})
+
+test('a reply after the window is sent', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, userTyped('Run the long job'))
+    run.advance(60_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'The job finished.', prompt: 'Run the long job' }), 1)
+    await settle()
+
+    assert.equal(run.sent.length, 1)
+    assert.match(run.sent[0], /A new|New reply|finished a turn/)
+  } finally {
+    await run.close()
+  }
+})
+
+test('a later action starts the window again', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, userTyped('first'))
+    run.advance(45_000)
+    // Still inside the first window: quiet.
+    run.turnEnded(sessionOf('session-a', { reply: 'one', prompt: 'first' }), 1)
+    await settle()
+    assert.deepEqual(run.sent, [])
+
+    // A second action at 45s restarts the window; 45s later is 90s after the first but only
+    // 45s after the second, so it is still quiet.
+    run.emit({ id: 'session-a' }, userTyped('second'))
+    run.advance(45_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'two', prompt: 'second' }), 2)
+    await settle()
+    assert.deepEqual(run.sent, [], 'the second action restarted the window')
+
+    // Another 16s: 61s since the second action, so the next reply is sent.
+    run.advance(16_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'three', prompt: 'second' }), 3)
+    await settle()
+    assert.equal(run.sent.length, 1)
+  } finally {
+    await run.close()
+  }
+})
+
+test('another Bot relaying a line does not count as the user being there', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, { type: 'user/message', data: { role: 'user', content: [text('from Dev')], source: { kind: 'bot' } } })
+    run.advance(1_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'Noted.', prompt: 'from Dev' }), 1)
+    await settle()
+
+    assert.equal(run.sent.length, 1, 'a relayed line is not presence')
+  } finally {
+    await run.close()
+  }
+})
+
+test('a card within the window is not sent either', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, userTyped('do something risky'))
+    run.advance(3_000)
+    run.setPending([{ event: 'approval/request', agentId: 'session-a' }])
+    await run.notifier.poll()
+    await settle()
+
+    assert.deepEqual(run.sent, [])
+    assert.ok(run.warnings.some(message => /approval:session-a was not sent/.test(message)))
+  } finally {
+    await run.close()
+  }
+})
+
+test('an answered card counts as the user being there', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, { type: 'approval/decided', data: { id: 'a1', outcome: 'allowed-once' } })
+    run.advance(2_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'Done.', prompt: 'go' }), 1)
+    await settle()
+
+    assert.deepEqual(run.sent, [])
+  } finally {
+    await run.close()
+  }
+})
+
+test('a window of 0 sends even right after the user acted', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook', presenceWindowMs: 0 })
+  try {
+    run.emit({ id: 'session-a' }, userTyped('hi'))
+    run.advance(1_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'hello', prompt: 'hi' }), 1)
+    await settle()
+
+    assert.equal(run.sent.length, 1)
+  } finally {
+    await run.close()
+  }
+})
+
+test('a skipped notice is not retried once the user goes away', async () => {
+  const run = await bench({ state: team, webhook: 'https://example.test/hook' })
+  try {
+    run.emit({ id: 'session-a' }, userTyped('go'))
+    run.advance(1_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'ok', prompt: 'go' }), 1)
+    await settle()
+    assert.deepEqual(run.sent, [])
+
+    // The same turn ending again (a replay) must not turn into a late message.
+    run.advance(120_000)
+    run.turnEnded(sessionOf('session-a', { reply: 'ok', prompt: 'go' }), 1)
+    await settle()
+    assert.deepEqual(run.sent, [])
   } finally {
     await run.close()
   }

@@ -7,6 +7,7 @@ import { compose } from './compose.js'
 import { Pushed } from './dedupe.js'
 import { clip, endedTurn, summarise } from './events.js'
 import { cardsOf, newCards } from './pending.js'
+import { Presence, isUserActivity } from './presence.js'
 import { readTeam } from './team.js'
 import { send, webhookOf } from './webhook.js'
 
@@ -19,11 +20,13 @@ import { send, webhookOf } from './webhook.js'
  * @param {string} options.home where the sent ids are kept
  * @param {(message: string) => void} options.warn
  * @param {typeof fetch} [options.fetch] the webhook transport, for tests
+ * @param {() => number} [options.now] the clock, for tests
  * @returns {{ stop: () => Promise<void>, poll: () => Promise<void>, pushed: Pushed }}
  */
-export function install({ ctx, config, home, warn, fetch }) {
+export function install({ ctx, config, home, warn, fetch, now }) {
   const pushed = new Pushed(join(home, 'pushed.txt'), config.keepPushed)
   const loaded = pushed.load()
+  const presence = new Presence(config.presenceWindowMs, now)
   const dshHome = resolveDshHome()
   /** @type {Map<string, import('./team.js').Owner> | undefined} */
   let team
@@ -35,6 +38,21 @@ export function install({ ctx, config, home, warn, fetch }) {
     // moment to re-read it. A stale map costs a missing name, never a crash.
     team = await readTeam(dshHome)
     return team
+  }
+
+  /**
+   * Whether this notice should be skipped because the user is still at the computer: the
+   * screen in front of them already shows the answer, so the group message would be noise.
+   * The event is still remembered as told, so a later turn is not held back by this one.
+   * @param {string} what the notice's id, for the log line
+   * @returns {boolean} true when it was skipped
+   */
+  const quiet = (what) => {
+    if (!presence.atComputer()) return false
+    const idle = presence.idleFor()
+    const idleText = idle === undefined ? 'just now' : `${Math.round(idle / 1000)}s ago`
+    warn(`wecom-notify: ${what} was not sent, the user was active ${idleText} (window ${presence.windowMs}ms)`)
+    return true
   }
 
   const tell = async (notice) => {
@@ -62,8 +80,9 @@ export function install({ ctx, config, home, warn, fetch }) {
     if (owner === undefined) return
     // A group's ordinary reply is not worth a system notification; only a card there is.
     if (owner.kind === 'group') return
-    const { reply, prompt } = summarise(session)
     pushed.add(id)
+    if (quiet(id)) return
+    const { reply, prompt } = summarise(session)
     void tell({
       kind: 'reply',
       owner,
@@ -86,6 +105,7 @@ export function install({ ctx, config, home, warn, fetch }) {
       const owner = known.get(card.slice(card.indexOf(':') + 1))
       if (owner === undefined) continue
       pushed.add(card)
+      if (quiet(card)) continue
       void tell({ kind, owner })
     }
   }
@@ -102,6 +122,7 @@ export function install({ ctx, config, home, warn, fetch }) {
   }
 
   const disposeSession = ctx.on('session/event', (session, event) => {
+    if (isUserActivity(event)) presence.touch()
     const turn = endedTurn(event)
     if (turn === undefined) return
     void onTurnEnd(session, turn).catch(error => warn(`wecom-notify: a reply notice failed: ${messageOf(error)}`))

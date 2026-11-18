@@ -13,6 +13,7 @@ import z from '@deepseek-ai/schemastery'
  * @property {number} textChars how much of the Bot's reply the message quotes
  * @property {number} promptChars how much of the user's own line it quotes
  * @property {number} keepPushed how many sent ids are remembered across restarts
+ * @property {number} presenceWindowMs stay quiet this long after the user last acted; 0 never does
  */
 
 /** The applied config: every field present, defaults filled in. */
@@ -25,6 +26,7 @@ export const DEFAULTS = Object.freeze({
   textChars: 200,
   promptChars: 100,
   keepPushed: 2000,
+  presenceWindowMs: 60000,
 })
 
 /** The config this plugin accepts; DSH fills in whatever the entry leaves out. */
@@ -41,6 +43,7 @@ export const Config = z.object({
   textChars: z.natural().min(20).max(2000).default(DEFAULTS.textChars),
   promptChars: z.natural().min(0).max(1000).default(DEFAULTS.promptChars),
   keepPushed: z.natural().min(10).max(100000).default(DEFAULTS.keepPushed),
+  presenceWindowMs: z.natural().min(0).max(86400000).default(DEFAULTS.presenceWindowMs),
 })
 
 /**
@@ -60,6 +63,7 @@ export function resolveConfig(config = {}) {
     textChars: positive(config.textChars, DEFAULTS.textChars),
     promptChars: nonNegative(config.promptChars, DEFAULTS.promptChars),
     keepPushed: positive(config.keepPushed, DEFAULTS.keepPushed),
+    presenceWindowMs: nonNegative(config.presenceWindowMs, DEFAULTS.presenceWindowMs),
   }
 }
 
